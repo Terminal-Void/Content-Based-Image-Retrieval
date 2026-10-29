@@ -1,0 +1,33 @@
+[project]
+name = "cbir"
+version = "0.1.0"
+description = "课程作业：基于颜色直方图和深度特征的以图搜图"
+readme = "README.md"
+authors = [
+    { name = "Terminal_Void", email = "xingzhili2007@163.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "ipykernel>=7.4.0",
+    "jupyterlab>=4.6.4",
+    "matplotlib>=3.11.2",
+    "numpy>=2.5.4",
+    "opencv-python>=5.0.0.93",
+    "pillow>=13.0.0",
+    "torch>=2.14.1",
+    "torchvision>=0.29.1",
+]
+
+[build-system]
+requires = ["setuptools>=75.0.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["cbir*"]
+
+[dependency-groups]
+data = [
+    "pyarrow>=18.0.0",
+]
+
+
