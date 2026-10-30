@@ -1,4 +1,4 @@
-"""运行一次检索并保存查询图与 Top-5 结果图。"""
+"""运行一次以图搜图检索并保存查询图与 Top-5 结果图。"""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from pathlib import Path
 
 from cbir import (
     DeepFeatureExtractor,
+    FeatureExtractor,
     FeatureGallery,
     HistogramFeatureExtractor,
     list_image_paths,
@@ -20,11 +21,11 @@ def main() -> None:
         "--feature",
         choices=("histogram", "deep"),
         default="histogram",
-        help="使用的特征方法",
+        help="使用的特征提取方法",
     )
     parser.add_argument(
         "--metric",
-        choices=("cosine", "euclidean", "l1", "intersection"),
+        choices=("cosine", "euclidean"),
         default="cosine",
         help="使用的相似度或距离度量方式",
     )
@@ -48,16 +49,15 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    data_root = args.data_root
-    gallery_paths = list_image_paths(data_root / "gallery")
+    gallery_paths = list_image_paths(args.data_root / "gallery")
     if not gallery_paths:
         raise FileNotFoundError(
             "未找到检索库图片，请检查 dataset/gallery 下是否按类别分目录。"
         )
 
-    query_path = args.query
+    query_path: Path | None = args.query
     if query_path is None:
-        query_candidates = list_image_paths(data_root / "query")
+        query_candidates = list_image_paths(args.data_root / "query")
         if not query_candidates:
             raise FileNotFoundError(
                 "未找到查询集图片，请检查 dataset/query 下是否按类别分目录。"
@@ -66,6 +66,7 @@ def main() -> None:
     if not query_path.exists():
         raise FileNotFoundError(f"查询图片不存在：{query_path}")
 
+    extractor: FeatureExtractor
     if args.feature == "histogram":
         extractor = HistogramFeatureExtractor(bins_per_channel=16)
         feature_method = "RGB 颜色直方图"
@@ -75,12 +76,10 @@ def main() -> None:
         feature_method = "ResNet-50 深度特征"
         cache_path = Path("cache/deep_gallery.npz")
 
-    categories = [path.parent.name for path in gallery_paths]
     gallery = FeatureGallery.build_or_load(
         gallery_paths,
         extractor,
         cache_path=cache_path,
-        categories=categories,
     )
     query_feature = extractor.extract(query_path)
     results = gallery.search(query_feature, top_k=5, metric=args.metric)
@@ -88,7 +87,6 @@ def main() -> None:
         query_path=query_path,
         results=results,
         feature_method=feature_method,
-        query_category=query_path.parent.name,
         save_path=args.output,
         show=not args.no_show,
     )
