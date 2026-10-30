@@ -9,17 +9,9 @@ from cbir import (
     DeepFeatureExtractor,
     FeatureGallery,
     HistogramFeatureExtractor,
+    list_image_paths,
     plot_search_results,
 )
-
-
-def _image_paths(root: Path) -> list[Path]:
-    extensions = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
-    return sorted(
-        path
-        for path in root.glob("*/*")
-        if path.is_file() and path.suffix.lower() in extensions
-    )
 
 
 def main() -> None:
@@ -29,6 +21,12 @@ def main() -> None:
         choices=("histogram", "deep"),
         default="histogram",
         help="使用的特征方法",
+    )
+    parser.add_argument(
+        "--metric",
+        choices=("cosine", "euclidean", "l1", "intersection"),
+        default="cosine",
+        help="使用的相似度或距离度量方式",
     )
     parser.add_argument("--query", type=Path, help="查询图片路径")
     parser.add_argument(
@@ -51,7 +49,7 @@ def main() -> None:
     args = parser.parse_args()
 
     data_root = args.data_root
-    gallery_paths = _image_paths(data_root / "gallery")
+    gallery_paths = list_image_paths(data_root / "gallery")
     if not gallery_paths:
         raise FileNotFoundError(
             "未找到检索库图片，请检查 dataset/gallery 下是否按类别分目录。"
@@ -59,7 +57,12 @@ def main() -> None:
 
     query_path = args.query
     if query_path is None:
-        query_path = _image_paths(data_root / "query")[0]
+        query_candidates = list_image_paths(data_root / "query")
+        if not query_candidates:
+            raise FileNotFoundError(
+                "未找到查询集图片，请检查 dataset/query 下是否按类别分目录。"
+            )
+        query_path = query_candidates[0]
     if not query_path.exists():
         raise FileNotFoundError(f"查询图片不存在：{query_path}")
 
@@ -80,7 +83,7 @@ def main() -> None:
         categories=categories,
     )
     query_feature = extractor.extract(query_path)
-    results = gallery.search(query_feature, top_k=5)
+    results = gallery.search(query_feature, top_k=5, metric=args.metric)
     plot_search_results(
         query_path=query_path,
         results=results,

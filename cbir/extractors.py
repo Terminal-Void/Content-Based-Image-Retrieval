@@ -1,4 +1,4 @@
-"""颜色直方图和深度特征提取器。"""
+"""图像读取预处理、颜色直方图特征提取器与深度特征提取器。"""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn as nn
-from PIL import Image
+from PIL import Image, ImageOps
 from torchvision import models
 
 from .core import FeatureExtractor
@@ -22,18 +22,43 @@ def _l2_normalize(vector: np.ndarray) -> np.ndarray:
     return vector / norm
 
 
-class HistogramFeatureExtractor(FeatureExtractor):
-    """提取 RGB 三通道颜色直方图特征。"""
+def load_rgb_image(
+    image_path: str | Path,
+    resize: tuple[int, int] | None = None,
+) -> Image.Image:
+    """读取图像并进行基础预处理：EXIF 方向校正、统一转换为 RGB 通道及可选缩放。"""
+    with Image.open(image_path) as image:
+        corrected = ImageOps.exif_transpose(image)
+        rgb_image = corrected.convert("RGB")
+        if resize is not None:
+            rgb_image = rgb_image.resize(resize, Image.Resampling.BILINEAR)
+        return rgb_image.copy()
 
-    def __init__(self, bins_per_channel: int = 16) -> None:
+
+class HistogramFeatureExtractor(FeatureExtractor):
+    """提取 RGB 三通道归一化颜色直方图特征。"""
+
+    def __init__(
+        self,
+        bins_per_channel: int = 16,
+        resize: tuple[int, int] | None = None,
+    ) -> None:
         if bins_per_channel < 1:
             raise ValueError("bins_per_channel 必须是正整数")
         self.bins_per_channel = bins_per_channel
+        self.resize = resize
 
-    def _extract_vector(self, image_path: str | Path) -> np.ndarray:
-        with Image.open(image_path) as image:
-            rgb_image = np.asarray(image.convert("RGB"), dtype=np.uint8)
+    @property
+    def feature_dim(self) -> int:
+        """拼接后的特征向量维度（3 × bins_per_channel）。"""
+        return 3 * self.bins_per_channel
 
+    def extract_channel_histograms(self, image_path: str | Path) -> np.ndarray:
+        """提取 R、G、B 三个通道各自归一化后的概率分布，返回形状为 (3, bins)。"""
+        rgb_image = np.asarray(
+            load_rgb_image(image_path, resize=self.resize),
+            dtype=np.uint8,
+        )
         channel_histograms = []
         for channel in range(3):
             histogram, _ = np.histogram(
@@ -42,15 +67,20 @@ class HistogramFeatureExtractor(FeatureExtractor):
                 range=(0, 256),
             )
             histogram = histogram.astype(np.float32)
-            histogram /= histogram.sum()
+            total = histogram.sum()
+            if total > 0:
+                histogram /= total
             channel_histograms.append(histogram)
+        return np.stack(channel_histograms, axis=0)
 
-        vector = np.concatenate(channel_histograms)
+    def _extract_vector(self, image_path: str | Path) -> np.ndarray:
+        channel_histograms = self.extract_channel_histograms(image_path)
+        vector = channel_histograms.reshape(-1)
         return _l2_normalize(vector).astype(np.float32)
 
 
 class DeepFeatureExtractor(FeatureExtractor):
-    """使用预训练 ResNet-50 最后一层全连接层之前的输出作为特征。"""
+    """使用 ImageNet 预训练 ResNet-50 全局平均池化层输出作为深度特征。"""
 
     def __init__(self, device: str | torch.device | None = None) -> None:
         if device is None:
@@ -68,10 +98,14 @@ class DeepFeatureExtractor(FeatureExtractor):
         self.model.eval().to(self.device)
         self.preprocess = weights.transforms()
 
+    @property
+    def feature_dim(self) -> int:
+        """ResNet-50 倒数第二层（全局平均池化层）输出维度。"""
+        return 2048
+
     def _extract_vector(self, image_path: str | Path) -> np.ndarray:
-        with Image.open(image_path) as image:
-            input_tensor = self.preprocess(image.convert("RGB"))
-        input_tensor = input_tensor.unsqueeze(0).to(self.device)
+        rgb_image = load_rgb_image(image_path)
+        input_tensor = self.preprocess(rgb_image).unsqueeze(0).to(self.device)
 
         with torch.inference_mode():
             features = self.model(input_tensor)
@@ -83,7 +117,7 @@ class DeepFeatureExtractor(FeatureExtractor):
         image_paths: Sequence[str | Path],
         batch_size: int = 32,
     ) -> np.ndarray:
-        """分批提取深度特征，减少模型调用次数。"""
+        """分批提取深度特征，减少模型前向调用次数。"""
         if batch_size < 1:
             raise ValueError("batch_size 必须是正整数")
 
@@ -91,10 +125,9 @@ class DeepFeatureExtractor(FeatureExtractor):
         batches: list[np.ndarray] = []
         for start in range(0, len(paths), batch_size):
             batch_paths = paths[start : start + batch_size]
-            tensors = []
-            for path in batch_paths:
-                with Image.open(path) as image:
-                    tensors.append(self.preprocess(image.convert("RGB")))
+            tensors = [
+                self.preprocess(load_rgb_image(path)) for path in batch_paths
+            ]
             input_batch = torch.stack(tensors).to(self.device)
 
             with torch.inference_mode():
@@ -105,5 +138,5 @@ class DeepFeatureExtractor(FeatureExtractor):
             )
 
         if not batches:
-            return np.empty((0, 2048), dtype=np.float32)
+            return np.empty((0, self.feature_dim), dtype=np.float32)
         return np.concatenate(batches).astype(np.float32)
